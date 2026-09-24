@@ -54,6 +54,17 @@ def _kind_label(is_group: bool) -> str:
 
 
 @dataclass
+class ChatPulse:
+    """一个会话最近消息的观察结果。"""
+
+    last_is_self: bool = False
+    """最后一条消息是不是麦麦自己发的。"""
+
+    last_human_at: float = 0.0
+    """最后一条真人消息的时间戳，没有则 0。"""
+
+
+@dataclass
 class TargetState:
     """单个目标会话的运行时状态。"""
 
@@ -373,7 +384,14 @@ class TopicSeekerPlugin(MaiBotPlugin):
             self.ctx.logger.debug(f"[{state.target_id}] 距上次主动不足 {min_gap / 60:.0f} 分钟，跳过")
             return
 
-        idle_seconds = await self._idle_seconds(state.stream_id)
+        pulse = await self._read_chat_pulse(state.stream_id)
+        if pulse.last_is_self:
+            # 麦麦说完话没人接的时候，最后一条就是它自己发的。
+            # 这时再主动就不是「找话题」而是对着空气自言自语了 —— 等群友开口再说。
+            self.ctx.logger.debug(f"[{state.target_id}] 最后一条消息是麦麦自己发的，等群友开口")
+            return
+
+        idle_seconds = self._idle_seconds_from(pulse)
         required = max(1, int(self.config.scheduler.idle_minutes)) * 60
         if idle_seconds < required:
             self.ctx.logger.debug(
@@ -401,19 +419,39 @@ class TopicSeekerPlugin(MaiBotPlugin):
             return start <= current <= end
         return current >= start or current <= end  # 跨夜
 
-    async def _idle_seconds(self, stream_id: str) -> float:
-        """返回该会话距最后一条真人消息的秒数。
+    def _idle_seconds_from(self, pulse: ChatPulse) -> float:
+        """由观察结果算出「距最后一条真人消息」的秒数。
 
         会话里一条消息都查不到时（宿主刚重启、或这是个从没聊过的新会话），
         以插件加载时刻起算，避免刚启动就开麦。
         """
 
-        last_message_at = await self._last_human_message_at(stream_id)
-        baseline = max(last_message_at, self._loaded_at) if last_message_at else self._loaded_at
+        baseline = max(pulse.last_human_at, self._loaded_at) if pulse.last_human_at else self._loaded_at
         return max(0.0, time.time() - baseline)
 
-    async def _last_human_message_at(self, stream_id: str) -> float:
-        """查最近一条非 bot 消息的时间戳，查不到返回 0。"""
+    async def _idle_seconds(self, stream_id: str) -> float:
+        """自己查一次并算出冷场时长，供命令与手动触发使用。"""
+
+        return self._idle_seconds_from(await self._read_chat_pulse(stream_id))
+
+    @staticmethod
+    def _sender_id(message: dict[str, Any]) -> str:
+        """从消息字典里取发送者 ID。"""
+
+        info = message.get("message_info")
+        if not isinstance(info, dict):
+            return ""
+        user = info.get("user_info")
+        if not isinstance(user, dict):
+            return ""
+        return str(user.get("user_id") or "")
+
+    async def _read_chat_pulse(self, stream_id: str) -> ChatPulse:
+        """看一眼会话最近的消息，得到「最后一条是不是自己发的」和「最后一条真人消息的时间」。
+
+        前者的用途是拦住自言自语：麦麦说完话没人接的时候，最后一条就是它自己发的，
+        这时候再主动就不是找话题了。按时间戳自己挑最新的一条，不依赖返回顺序。
+        """
 
         window = max(1, int(self.config.scheduler.lookback_hours)) * 3600
         now = time.time()
@@ -427,26 +465,32 @@ class TopicSeekerPlugin(MaiBotPlugin):
             )
         except Exception as exc:  # noqa: BLE001 - 查不到就当没有消息
             self.ctx.logger.warning(f"查询会话消息失败 ({stream_id}): {exc}")
-            return 0.0
+            return ChatPulse()
 
         # SDK 会把宿主信封解包成 messages 列表，这里兼容未解包的情况
         messages = raw.get("messages") if isinstance(raw, dict) else raw
         if not isinstance(messages, list):
-            return 0.0
+            return ChatPulse()
 
+        parsed: list[tuple[float, bool]] = []
         for message in messages:
             if not isinstance(message, dict):
                 continue
-            sender_id = str(
-                ((message.get("message_info") or {}).get("user_info") or {}).get("user_id") or ""
-            )
-            if self._bot_account and sender_id == self._bot_account:
-                continue  # 麦麦自己说的话不算「有人在聊」
             try:
-                return float(message.get("timestamp") or 0.0)
+                timestamp = float(message.get("timestamp") or 0.0)
             except (TypeError, ValueError):
                 continue
-        return 0.0
+            is_self = bool(self._bot_account) and self._sender_id(message) == self._bot_account
+            parsed.append((timestamp, is_self))
+
+        if not parsed:
+            return ChatPulse()
+
+        _, latest_is_self = max(parsed, key=lambda item: item[0])
+        pulse = ChatPulse(last_is_self=latest_is_self)
+        # 麦麦自己说的话不算「有人在聊」，冷场时长只看真人消息
+        pulse.last_human_at = max((timestamp for timestamp, is_self in parsed if not is_self), default=0.0)
+        return pulse
 
     async def _trigger(self, state: TargetState, idle_seconds: float) -> bool:
         """把意图交给 Maisaka；是否真的开口由 Planner 决定。"""
