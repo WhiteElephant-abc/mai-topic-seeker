@@ -137,7 +137,7 @@ class TopicSeekerPlugin(MaiBotPlugin):
         """
 
         try:
-            rows = await self.ctx.database.query(
+            rows = await self.ctx.db.query(
                 model_name="BotPlatformAccount",
                 filters={"platform": self.config.target.platform, "disabled": False},
                 order_by=["-last_seen_at"],
@@ -246,7 +246,7 @@ class TopicSeekerPlugin(MaiBotPlugin):
         filters: Dict[str, Any] = {"platform": self.config.target.platform}
         filters["group_id" if is_group else "user_id"] = target_id
         try:
-            rows = await self.ctx.database.query(
+            rows = await self.ctx.db.query(
                 model_name="ChatSession",
                 filters=filters,
                 order_by=["-last_active_timestamp"],
