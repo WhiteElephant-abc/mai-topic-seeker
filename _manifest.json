@@ -27,7 +27,8 @@
     "message.get_by_time_in_chat",
     "database.query",
     "config.get",
-    "maisaka.proactive.trigger"
+    "maisaka.proactive.trigger",
+    "send.text"
   ],
   "i18n": {
     "default_locale": "zh-CN",
