@@ -1,9 +1,12 @@
 """找话题的麦麦 —— 插件配置模型。
 
-WebUI 的配置页从这份模型生成：配置节的标题与说明来自 ``__ui_label__`` 和类
-docstring，字段的标签、说明、排序来自 ``json_schema_extra`` 里的
-``label`` / ``hint`` / ``order``。不加这些元数据时，界面会退化成直接显示
-英文字段名，所以每个字段都补齐了。
+WebUI 的配置页从这份模型生成：配置节的标题来自 ``__ui_label__``，说明来自类
+docstring；字段的标签、说明、排序来自 ``json_schema_extra`` 里的
+``label`` / ``hint`` / ``order``。
+
+数值范围用 pydantic 的 ``ge`` / ``le`` 声明，既做校验也作为 WebUI 输入框的
+min / max，所以不必在 ``json_schema_extra`` 里重复写一遍。校验放在这里而不是
+运行时：配置写错了就当场拒绝加载，比跑到一半再降级要容易发现得多。
 """
 
 from __future__ import annotations
@@ -11,6 +14,27 @@ from __future__ import annotations
 from typing import ClassVar, List
 
 from maibot_sdk import Field, PluginConfigBase
+from pydantic import field_validator
+
+# 注意措辞要明确「主动发起」，否则 Planner 会把它当成待回复的消息去翻历史记录。
+DEFAULT_INTENT_TEXT = (
+    "群里已经安静了 {idle_minutes} 分钟，现在没有需要回复的新消息。"
+    "请你主动发一条新消息起个话头，不要引用或回复历史消息。"
+)
+
+
+def _validate_hhmm(value: str) -> str:
+    """校验并规范化 ``HH:MM`` 时刻。"""
+
+    hour_text, _, minute_text = str(value or "").strip().partition(":")
+    try:
+        hour = int(hour_text)
+        minute = int(minute_text or "0")
+    except ValueError as exc:
+        raise ValueError(f"必须是 HH:MM 格式，当前为 {value!r}") from exc
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        raise ValueError(f"必须是 00:00~23:59 之间的时刻，当前为 {value!r}")
+    return f"{hour:02d}:{minute:02d}"
 
 
 class PluginSection(PluginConfigBase):
@@ -89,69 +113,74 @@ class SchedulerSection(PluginConfigBase):
     )
     check_interval: int = Field(
         default=25,
+        ge=1,
         description="检查间隔（分钟）。",
         json_schema_extra={
             "label": "检查间隔（分钟）",
             "hint": "每隔多久看一次群里是不是冷场了。实际间隔会叠加下面的抖动值。",
             "order": 3,
-            "min": 1,
         },
     )
     jitter: int = Field(
         default=5,
+        ge=0,
         description="检查间隔抖动（分钟）。",
         json_schema_extra={
             "label": "间隔抖动（分钟）",
             "hint": "实际间隔在「检查间隔 ± 该值」之间随机，避免每天在固定时刻开口。填 0 表示不抖动。",
             "order": 4,
-            "min": 0,
         },
     )
     idle_minutes: int = Field(
         default=45,
+        ge=1,
         description="冷场阈值（分钟）。",
         json_schema_extra={
             "label": "冷场阈值（分钟）",
             "hint": (
                 "距最后一条群友消息超过这个时长才算冷场。"
-                "麦麦自己发的消息不计入，所以它说完话没人接的时候不会继续找话题。"
+                "bot 自己发的消息不计入，所以它说完话没人接的时候不会继续找话题。"
             ),
             "order": 5,
-            "min": 1,
         },
     )
     probability: float = Field(
         default=0.6,
+        ge=0,
+        le=1,
         description="触发概率。",
         json_schema_extra={
             "label": "触发概率",
-            "hint": "冷场成立后，每次检查有多大概率真的把话题交给麦麦。0.6 表示大约六成的检查会触发。",
+            "hint": "冷场成立后，每次检查有多大概率真的触发。0.6 表示大约六成的检查会触发。",
             "order": 6,
-            "min": 0,
-            "max": 1,
             "step": 0.05,
         },
     )
     min_interval_between_chats: int = Field(
         default=90,
+        ge=0,
         description="两次主动之间的最小间隔（分钟）。",
         json_schema_extra={
             "label": "最小间隔（分钟）",
             "hint": "强制冷却时间。即使群里再次冷场，也不会在这个时长的冷却期内开口。",
             "order": 7,
-            "min": 0,
         },
     )
     lookback_hours: int = Field(
         default=72,
+        ge=1,
         description="消息回看窗口（小时）。",
         json_schema_extra={
             "label": "消息回看窗口（小时）",
             "hint": "只在这个时间窗口内查找历史消息；窗口内一条消息都没有时，冷场计时从插件加载那一刻算起。",
             "order": 8,
-            "min": 1,
         },
     )
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def _check_time(cls, value: str) -> str:
+        return _validate_hhmm(value)
 
 
 class TargetSection(PluginConfigBase):
@@ -162,6 +191,7 @@ class TargetSection(PluginConfigBase):
 
     platform: str = Field(
         default="qq",
+        min_length=1,
         description="目标平台标识。",
         json_schema_extra={
             "label": "平台",
@@ -202,23 +232,28 @@ class TargetSection(PluginConfigBase):
 
 
 class IntentSection(PluginConfigBase):
-    """交给麦麦的意图。它只是「提醒麦麦该说点什么」，具体说什么由麦麦自己决定。"""
+    """交给 Maisaka 的意图。它只是「提醒该说点什么」，具体说什么由 Maisaka 自己决定。"""
 
     __ui_label__: ClassVar[str] = "话题意图"
     __ui_order__: ClassVar[int] = 3
 
     text: str = Field(
-        default="群里安静了一会儿了。你可以主动起个话头，或者接着之前没聊完的话题往下说。",
+        default=DEFAULT_INTENT_TEXT,
+        min_length=1,
         description="注入 Planner 的意图文本。",
         json_schema_extra={
             "label": "意图文本",
-            "hint": "支持占位符 {nickname} {idle_minutes} {time} {date}。写清楚「为什么要说话」即可，措辞由麦麦自己把握。",
+            "hint": (
+                "支持占位符 {nickname} {idle_minutes} {time} {date}。"
+                "措辞要明确「主动发起」，否则 Planner 会把它当成待回复的消息去翻历史记录。"
+            ),
             "order": 0,
             "rows": 3,
         },
     )
     reason: str = Field(
         default="topic_seeker",
+        min_length=1,
         description="触发原因标识。",
         json_schema_extra={
             "label": "原因标识",
@@ -229,7 +264,7 @@ class IntentSection(PluginConfigBase):
 
 
 class TopicSeekerConfig(PluginConfigBase):
-    """找话题的麦麦 —— 群聊冷场时把「起个话头」的意图交给 Maisaka。"""
+    """找话题插件 —— 群聊冷场时把「起个话头」的意图交给 Maisaka。"""
 
     plugin: PluginSection = Field(default_factory=PluginSection)
     scheduler: SchedulerSection = Field(default_factory=SchedulerSection)

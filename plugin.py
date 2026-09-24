@@ -26,25 +26,13 @@ import asyncio
 import random
 import time
 from dataclasses import dataclass
-from datetime import datetime, time as datetime_time
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from maibot_sdk import ON_BOT_CONFIG_RELOAD, Command, MaiBotPlugin
 
 from .config import TopicSeekerConfig
 
-_DEFAULT_INTENT = "群里安静了一会儿了。你可以主动起个话头，或者接着之前没聊完的话题往下说。"
-
-
-def _parse_hhmm(value: str) -> datetime_time:
-    """解析 ``HH:MM`` 形式的时刻。"""
-
-    hour_text, _, minute_text = str(value or "").strip().partition(":")
-    hour = int(hour_text)
-    minute = int(minute_text or "0")
-    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
-        raise ValueError(f"非法时刻: {value!r}")
-    return datetime_time(hour, minute)
 
 
 def _kind_label(is_group: bool) -> str:
@@ -93,7 +81,7 @@ class TopicSeekerPlugin(MaiBotPlugin):
         self._targets: Dict[str, TargetState] = {}
         self._scheduler_task: Optional[asyncio.Task] = None
         self._bot_account = ""
-        self._nickname = "麦麦"
+        self._nickname = ""
         self._loaded_at = 0.0
         self._platform = ""
 
@@ -101,7 +89,7 @@ class TopicSeekerPlugin(MaiBotPlugin):
 
     async def on_load(self) -> None:
         self._loaded_at = time.time()
-        self._nickname = await self._get_global_str("bot.nickname", "麦麦")
+        await self._refresh_nickname()
         self._bot_account = await self._resolve_bot_account()
 
         await self._sync_targets()
@@ -130,7 +118,7 @@ class TopicSeekerPlugin(MaiBotPlugin):
         if scope == ON_BOT_CONFIG_RELOAD:
             # 昵称与 bot 账号参与意图文本渲染和会话解析，但它们在全局配置里，
             # 不属于插件自己的 config.toml，只有订阅了才会收到这次回调。
-            self._nickname = await self._get_global_str("bot.nickname", "麦麦")
+            await self._refresh_nickname()
             self._bot_account = await self._resolve_bot_account()
             self.ctx.logger.info(
                 "全局配置已更新：昵称=%s，bot 账号=%s", self._nickname, self._bot_account or "未确定"
@@ -146,14 +134,19 @@ class TopicSeekerPlugin(MaiBotPlugin):
     # ========== 配置与账号 ==========
 
     async def _get_global_str(self, key: str, default: str) -> str:
+        """读全局配置里的字符串项；读不到就退回默认值。"""
+
         try:
             value = await self.ctx.config.get(key, default)
-        except Exception as exc:  # noqa: BLE001 - 读不到配置不该让插件起不来
+        except Exception as exc:  # noqa: BLE001 - 单个配置项读失败不该让插件起不来
             self.ctx.logger.warning(f"读取全局配置 {key} 失败: {exc}")
             return default
-        if isinstance(value, dict):
-            value = value.get("value", default)
         return str(value or default)
+
+    async def _refresh_nickname(self) -> None:
+        """刷新自称，供意图文本的 {nickname} 占位符使用。"""
+
+        self._nickname = await self._get_global_str("bot.nickname", "bot")
 
     async def _resolve_bot_account(self) -> str:
         """确定 bot 在当前平台的账号 ID。
@@ -400,7 +393,7 @@ class TopicSeekerPlugin(MaiBotPlugin):
         if not state.stream_id:
             return
 
-        if not self._in_time_range(datetime.now().time()):
+        if not self._in_time_range():
             return
 
         min_gap = max(0, int(self.config.scheduler.min_interval_between_chats)) * 60
@@ -413,7 +406,9 @@ class TopicSeekerPlugin(MaiBotPlugin):
         if pulse.last_is_self:
             # 麦麦说完话没人接的时候，最后一条就是它自己发的。
             # 这时再主动就不是「找话题」而是对着空气自言自语了 —— 等群友开口再说。
-            self.ctx.logger.debug(f"[{state.target_id}] 最后一条消息是麦麦自己发的，等群友开口")
+            self.ctx.logger.debug(
+                f"[{state.target_id}] 最后一条消息是 {self._nickname} 自己发的，等群友开口"
+            )
             return
 
         idle_seconds = self._idle_seconds_from(pulse)
@@ -433,16 +428,18 @@ class TopicSeekerPlugin(MaiBotPlugin):
 
         await self._trigger(state, idle_seconds)
 
-    def _in_time_range(self, current: datetime_time) -> bool:
-        try:
-            start = _parse_hhmm(self.config.scheduler.start_time)
-            end = _parse_hhmm(self.config.scheduler.end_time)
-        except (TypeError, ValueError) as exc:
-            self.ctx.logger.warning(f"时间段配置无法解析，本轮不限制时间: {exc}")
-            return True
+    def _in_time_range(self) -> bool:
+        """当前时刻是否落在配置的时段内。
+
+        配置模型已经保证两个值都是规范的 ``HH:MM``，所以直接按字符串比大小。
+        """
+
+        start = self.config.scheduler.start_time
+        end = self.config.scheduler.end_time
+        now = datetime.now().strftime("%H:%M")
         if start <= end:
-            return start <= current <= end
-        return current >= start or current <= end  # 跨夜
+            return start <= now <= end
+        return now >= start or now <= end  # 跨夜
 
     def _idle_seconds_from(self, pulse: ChatPulse) -> float:
         """由观察结果算出「距最后一条真人消息」的秒数。
@@ -481,7 +478,8 @@ class TopicSeekerPlugin(MaiBotPlugin):
         window = max(1, int(self.config.scheduler.lookback_hours)) * 3600
         now = time.time()
         try:
-            raw = await self.ctx.message.get_by_time_in_chat(
+            # SDK 会把这层 RPC 信封解包成 messages 列表
+            messages = await self.ctx.message.get_by_time_in_chat(
                 chat_id=stream_id,
                 start_time=str(now - window),
                 end_time=str(now),
@@ -492,8 +490,6 @@ class TopicSeekerPlugin(MaiBotPlugin):
             self.ctx.logger.warning(f"查询会话消息失败 ({stream_id}): {exc}")
             return ChatPulse()
 
-        # SDK 会把宿主信封解包成 messages 列表，这里兼容未解包的情况
-        messages = raw.get("messages") if isinstance(raw, dict) else raw
         if not isinstance(messages, list):
             return ChatPulse()
 
@@ -539,25 +535,19 @@ class TopicSeekerPlugin(MaiBotPlugin):
         state.last_proactive_at = time.time()
         state.trigger_count += 1
         self.ctx.logger.info(
-            f"[{state.target_id}] 已把意图交给麦麦（冷场 {idle_seconds / 60:.1f} 分钟，"
+            f"[{state.target_id}] 已把意图交给 {self._nickname}（冷场 {idle_seconds / 60:.1f} 分钟，"
             f"该目标累计 {state.trigger_count} 次）：{intent}"
         )
         return True
 
     def _render_intent(self, idle_seconds: float) -> str:
-        template = str(self.config.intent.text or "").strip() or _DEFAULT_INTENT
         now = datetime.now()
-        values = {
-            "nickname": self._nickname,
-            "idle_minutes": f"{idle_seconds / 60:.0f}",
-            "time": now.strftime("%H:%M"),
-            "date": now.strftime("%Y-%m-%d"),
-        }
-        try:
-            return template.format(**values)
-        except (KeyError, IndexError, ValueError):
-            # 模板里写了未知占位符就原样使用，别让一次笔误让插件彻底失效
-            return template
+        return self.config.intent.text.format(
+            nickname=self._nickname,
+            idle_minutes=f"{idle_seconds / 60:.0f}",
+            time=now.strftime("%H:%M"),
+            date=now.strftime("%Y-%m-%d"),
+        )
 
     # ========== 命令 ==========
 
@@ -568,8 +558,7 @@ class TopicSeekerPlugin(MaiBotPlugin):
         返回文本宿主只用于日志，不会替插件发出去，所以得自己调 send。
         """
 
-        if stream_id:
-            await self.ctx.send.text(text, stream_id)
+        await self.ctx.send.text(text, stream_id)
         return success, text, True
 
     def _state_by_stream(self, stream_id: str) -> Optional[TargetState]:
