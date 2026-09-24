@@ -1,3 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+
+# 本地配置：白名单里是群号和 QQ 号，不该进公开仓库；
+# 宿主在 config.toml 缺失时会用 config_model 自动生成默认配置。
+config.toml
