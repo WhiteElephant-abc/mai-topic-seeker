@@ -1,0 +1,39 @@
+{
+  "manifest_version": 2,
+  "version": "1.0.0",
+  "name": "找话题的麦麦",
+  "description": "群聊冷场时把「起个话头」的意图交给 Maisaka Planner，由它基于人格与记忆自行决定说什么；不额外调用 LLM，也不绕过人格系统。",
+  "author": {
+    "name": "白象_elephant",
+    "url": "https://github.com/WhiteElephant-abc"
+  },
+  "license": "GPL-3.0-only",
+  "urls": {
+    "repository": "https://github.com/WhiteElephant-abc/mai-topic-seeker"
+  },
+  "host_application": {
+    "min_version": "1.0.0",
+    "max_version": "1.99.99"
+  },
+  "sdk": {
+    "min_version": "2.3.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "chat.open_session",
+    "chat.get_stream_by_group_id",
+    "chat.get_stream_by_user_id",
+    "message.get_by_time_in_chat",
+    "database.query",
+    "config.get",
+    "maisaka.proactive.trigger"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  },
+  "id": "whiteelephant.mai-topic-seeker"
+}
