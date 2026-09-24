@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, time as datetime_time
 from typing import Any, Dict, Optional
 
-from maibot_sdk import Command, MaiBotPlugin
+from maibot_sdk import ON_BOT_CONFIG_RELOAD, Command, MaiBotPlugin
 
 from .config import TopicSeekerConfig
 
@@ -85,6 +85,9 @@ class TopicSeekerPlugin(MaiBotPlugin):
 
     config_model = TopicSeekerConfig
 
+    # bot.nickname 与适配器账号来自全局配置，不订阅就不会收到它们的更新通知
+    config_reload_subscriptions = {ON_BOT_CONFIG_RELOAD}
+
     def __init__(self) -> None:
         super().__init__()
         self._targets: Dict[str, TargetState] = {}
@@ -92,6 +95,7 @@ class TopicSeekerPlugin(MaiBotPlugin):
         self._bot_account = ""
         self._nickname = "麦麦"
         self._loaded_at = 0.0
+        self._platform = ""
 
     # ========== 生命周期 ==========
 
@@ -122,8 +126,20 @@ class TopicSeekerPlugin(MaiBotPlugin):
 
     async def on_config_update(self, scope: str, config_data: dict[str, object], version: str) -> None:
         del config_data, version
+
+        if scope == ON_BOT_CONFIG_RELOAD:
+            # 昵称与 bot 账号参与意图文本渲染和会话解析，但它们在全局配置里，
+            # 不属于插件自己的 config.toml，只有订阅了才会收到这次回调。
+            self._nickname = await self._get_global_str("bot.nickname", "麦麦")
+            self._bot_account = await self._resolve_bot_account()
+            self.ctx.logger.info(
+                "全局配置已更新：昵称=%s，bot 账号=%s", self._nickname, self._bot_account or "未确定"
+            )
+            return
+
         if scope and scope != "self":
             return
+
         self.ctx.logger.info("插件配置已更新，重新同步目标会话")
         await self._sync_targets()
 
@@ -174,6 +190,15 @@ class TopicSeekerPlugin(MaiBotPlugin):
         已解析成功的条目状态会被保留 —— 尤其是 ``last_proactive_at``，
         否则每轮补解析都会把「两次主动之间的最小间隔」重置掉。
         """
+
+        # 平台换了，之前按旧平台算出来的 stream_id 全部作废
+        platform = str(self.config.target.platform or "").strip()
+        if platform != self._platform:
+            if self._platform:
+                self.ctx.logger.info(f"平台由 {self._platform} 改为 {platform}，重新解析全部目标")
+            self._platform = platform
+            for state in self._targets.values():
+                state.stream_id = ""
 
         desired: Dict[str, bool] = {}
         for group_id in self.config.target.allowed_groups:
@@ -549,6 +574,7 @@ class TopicSeekerPlugin(MaiBotPlugin):
         "topic_seeker_status",
         description="查看找话题插件的运行状态",
         pattern=r"^/topic\s+status$",
+        permission="operator",
     )
     async def cmd_status(self, stream_id: str = "", **kwargs: Any):
         del kwargs
@@ -576,6 +602,7 @@ class TopicSeekerPlugin(MaiBotPlugin):
         "topic_seeker_trigger",
         description="立刻让麦麦尝试主动起个话题",
         pattern=r"^/topic(?:\s+trigger)?$",
+        permission="operator",
     )
     async def cmd_trigger(self, stream_id: str = "", **kwargs: Any):
         del kwargs

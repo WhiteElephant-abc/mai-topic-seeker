@@ -62,10 +62,30 @@ text = "已经 {time} 了，群里从 {idle_minutes} 分钟前就没人说话。
 
 ## 命令
 
+两个命令都声明了 `permission="operator"`，**只有被授权的用户能执行**。其他人发送时会被宿主直接拦下并回复「你没有权限使用此命令。」，插件根本不会收到调用。
+
 | 命令 | 说明 |
 |---|---|
 | `/topic` | 立刻让麦麦尝试主动起个话题（忽略时段、概率和最小间隔） |
 | `/topic status` | 查看跟踪的目标、各自的冷场时长和已触发次数 |
+
+授权写在**全局** `bot_config.toml` 里（不是插件自己的 `config.toml`）：
+
+```toml
+[plugin]
+# 全局操作员，可以执行所有声明了 operator 权限的命令
+permission = ["qq:123456789"]
+```
+
+只想放开这一个插件的话，用按命令细分的写法：
+
+```toml
+[plugin.command_permissions]
+"whiteelephant.mai-topic-seeker.topic_seeker_trigger" = { allow_users = ["qq:123456789"] }
+"whiteelephant.mai-topic-seeker.topic_seeker_status" = { allow_users = ["qq:123456789"] }
+```
+
+命令 ID 的格式是 `<插件 ID>.<命令名>`，`allow_users` 用 `平台:用户ID`，也可以用 `allow_chats = ["<聊天流 ID>"]` 按会话放行。另外从主程序的本地终端执行时不受此限制。
 
 ## 工作原理
 
