@@ -91,7 +91,7 @@ class SchedulerSection(PluginConfigBase):
         default=25,
         description="检查间隔（分钟）。",
         json_schema_extra={
-            "label": "检查间隔",
+            "label": "检查间隔（分钟）",
             "hint": "每隔多久看一次群里是不是冷场了。实际间隔会叠加下面的抖动值。",
             "order": 3,
             "min": 1,
@@ -101,7 +101,7 @@ class SchedulerSection(PluginConfigBase):
         default=5,
         description="检查间隔抖动（分钟）。",
         json_schema_extra={
-            "label": "间隔抖动",
+            "label": "间隔抖动（分钟）",
             "hint": "实际间隔在「检查间隔 ± 该值」之间随机，避免每天在固定时刻开口。填 0 表示不抖动。",
             "order": 4,
             "min": 0,
@@ -111,7 +111,7 @@ class SchedulerSection(PluginConfigBase):
         default=45,
         description="冷场阈值（分钟）。",
         json_schema_extra={
-            "label": "冷场阈值",
+            "label": "冷场阈值（分钟）",
             "hint": (
                 "距最后一条群友消息超过这个时长才算冷场。"
                 "麦麦自己发的消息不计入，所以它说完话没人接的时候不会继续找话题。"
@@ -136,7 +136,7 @@ class SchedulerSection(PluginConfigBase):
         default=90,
         description="两次主动之间的最小间隔（分钟）。",
         json_schema_extra={
-            "label": "最小间隔",
+            "label": "最小间隔（分钟）",
             "hint": "强制冷却时间。即使群里再次冷场，也不会在这个时长的冷却期内开口。",
             "order": 7,
             "min": 0,
@@ -146,7 +146,7 @@ class SchedulerSection(PluginConfigBase):
         default=72,
         description="消息回看窗口（小时）。",
         json_schema_extra={
-            "label": "消息回看窗口",
+            "label": "消息回看窗口（小时）",
             "hint": "只在这个时间窗口内查找历史消息；窗口内一条消息都没有时，冷场计时从插件加载那一刻算起。",
             "order": 8,
             "min": 1,
