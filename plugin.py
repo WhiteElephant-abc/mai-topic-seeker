@@ -561,6 +561,17 @@ class TopicSeekerPlugin(MaiBotPlugin):
 
     # ========== 命令 ==========
 
+    async def _reply(self, text: str, stream_id: str, *, success: bool = True):
+        """把命令结果发到会话里，并把同样的文本回给宿主记日志。
+
+        命令返回的三元组是 ``(是否成功, 返回文本, 是否拦截后续消息)`` ——
+        返回文本宿主只用于日志，不会替插件发出去，所以得自己调 send。
+        """
+
+        if stream_id:
+            await self.ctx.send.text(text, stream_id)
+        return success, text, True
+
     def _state_by_stream(self, stream_id: str) -> Optional[TargetState]:
         normalized = str(stream_id or "").strip()
         if not normalized:
@@ -596,7 +607,7 @@ class TopicSeekerPlugin(MaiBotPlugin):
             lines.append(f"{state.kind} {state.target_id}: {state.stream_id or '-'}，{detail}")
         if self._state_by_stream(stream_id) is None:
             lines.append("（当前会话不在白名单里）")
-        return True, "\n".join(lines), True
+        return await self._reply("\n".join(lines), stream_id)
 
     @Command(
         "topic_seeker_trigger",
@@ -608,16 +619,16 @@ class TopicSeekerPlugin(MaiBotPlugin):
         del kwargs
         state = self._state_by_stream(stream_id)
         if state is None:
-            return False, "当前会话不在 [target] 白名单里", True
+            return await self._reply("会话不在白名单", stream_id, success=False)
         if not state.stream_id:
             await self._resolve_target(state)
         if not state.stream_id:
-            return False, "当前会话尚未解析出聊天流，稍后再试", True
+            return await self._reply("聊天流未解析", stream_id, success=False)
 
         idle_seconds = await self._idle_seconds(state.stream_id)
         if await self._trigger(state, idle_seconds):
-            return True, "已把话题意图交给麦麦，是否开口由它决定", True
-        return False, "注入失败，详见日志", True
+            return await self._reply("触发成功", stream_id)
+        return await self._reply("触发失败", stream_id, success=False)
 
 
 def create_plugin():
